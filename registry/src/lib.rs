@@ -1,4 +1,5 @@
 
+
 // Copyright (c) Lumina contributors
 // SPDX-License-Identifier: MIT
 #![no_std]
@@ -118,6 +119,8 @@ pub const SLASH_LOCK_LEDGERS: u32 = 10;
 /// | 24 | `RegistrationRateLimited` | The per-owner registration rate limit has been exceeded for the current window. | Wait for the current window to elapse, or have governance raise the limit via `propose_configure_registration_rate_limit`. |
 /// | 25 | `InsufficientFee` | The registration fee was not paid. | Ensure the owner holds at least `get_registration_fee()` of the stake token and approves the transfer before registering. |
 /// | 26 | `InvalidTags` | The tag count exceeds 10, or a tag is longer than 16 characters. | Pass at most 10 tags, each at most 16 characters long. |
+/// | 27 | `InvalidAttestation` | Attestation label is empty, too long, or the registration already has the maximum number of attestations. | Pass a non-empty label of at most `MAX_ATTESTATION_LABEL_LEN` bytes, or revoke an existing attestation first. |
+/// | 28 | `AttestationNotFound` | The caller has no attestation to revoke on this registration. | Only the attester can revoke their own attestation; check `get_attestations` first. |
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -180,6 +183,14 @@ pub enum RegistryError {
     InvalidAttestation = 27,
     /// The caller has no attestation to revoke on this registration.
     AttestationNotFound = 28,
+    /// The owner has reached the maximum number of contracts they may
+    /// register. See [`MAX_CONTRACTS_PER_OWNER`].
+    OwnerContractLimitReached = 29,
+    /// The owner has reached the maximum number of contracts they may
+    /// register. See [`MAX_CONTRACTS_PER_OWNER`].
+    OwnerContractLimitReached2 = 30,
+    /// The caller has no attestation to revoke on this registration.
+    AttestationNotFound = 28,
 }
 
 // ─── Storage shapes ────────────────────────────────────────────────────────
@@ -199,6 +210,9 @@ pub enum RegistryError {
 // `registry-v2/src/lib.rs` re-declares both types independently and reads
 // back storage written by this version — that test keeps these rules honest.
 
+/// Maximum number of contracts a single owner may have registered at once.
+pub const MAX_CONTRACTS_PER_OWNER: u32 = 100;
+
 /// Stored entry describing a registered Soroban contract.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -215,6 +229,8 @@ pub struct ContractEntry {
     pub registered_at: u32,
     /// Whether indexing is currently active for this contract.
     pub active: bool,
+    /// Whether the registration is currently active.
+    pub active2: bool,
 }
 
 // ─── Category taxonomy ─────────────────────────────────────────────────────

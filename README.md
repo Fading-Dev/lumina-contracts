@@ -205,6 +205,7 @@ reference for those codes; it is kept next to the enum in
 | 18 | `ProposalNotReady` | The proposal exists but its timelock has not elapsed. | Wait until the proposal's execution ledger, then call `execute_proposal` again. |
 | 19 | `ProposalAlreadyExecuted` | The proposal was already executed or cancelled. | Do not re-execute; read the proposal's final state to confirm the outcome. |
 | 20 | `RegistrationLimitReached` | The per-owner registration limit is enabled and this owner has hit it. | Deregister an unused entry, or have an admin raise the limit via `propose_configure_registration_rate_limit`. |
+| 21 | `OwnerContractLimitReached` | The owner already has the maximum number of registrations in their contract index. | Deregister an unused entry owned by this address, then retry the registration. |
 
 ### Staking & reputation
 
@@ -229,6 +230,14 @@ was typed into a form:
 | `get_contract_profile(contract_id)` | anyone — the entry and its reputation in one call |
 | `get_active_profiles(offset, limit)` | anyone — `get_active_contracts` with reputation attached |
 | `get_stake` / `is_verified` / `get_slashes` / `get_staking_config` | anyone |
+
+### Per-owner registration limit
+
+Each owner's contract index (`DataKey::OwnerContracts(Address)`) is capped at
+`MAX_OWNER_CONTRACTS` entries. Registering past the cap fails with
+`OwnerContractLimitReached` (code 21) instead of an opaque storage failure, so
+an owner at the limit gets a clear error. Registrations below the cap are
+unaffected. Deregistering an entry frees a slot in the index.
 
 Verified status has no non-governance path: a registrant cannot verify their own
 contract, which is the entire value of the signal. (Permissionless third-party
