@@ -8,6 +8,10 @@ Part of the Lumina project, split across three repos:
 - [lumina-backend](https://github.com/Lumeeena/lumina-backend) — indexer + GraphQL API + PostgreSQL schema
 - [lumina-contracts](https://github.com/Lumeeena/lumina-contracts) — this repo
 
+For a contributor-oriented map of storage, governance, registration, staking,
+slashing, and the invariants protected by the test suite, see
+[ARCHITECTURE.md](./ARCHITECTURE.md).
+
 ## Where the registry fits
 
 Lumina indexes Soroban contract events, but an indexer has to know *which*
@@ -106,7 +110,9 @@ calls against the table above.
 registry.register_contract(owner, contract_id, "My Protocol", "A DeFi protocol on Stellar", vec![Category::DeFi])
 ```
 
-`get_active_contracts(offset, limit)` returns a paginated list of active registrations for discovery.
+`get_active_contracts_after(cursor, limit)` walks the active registrations for discovery. Pass the `contract_id` of the last entry the previous call returned (`None` to start) and repeat until the page is empty. The cursor is anchored to a registration, so entries added mid-walk are neither duplicated nor skipped. The older `get_active_contracts(offset, limit)` is retained for one release but **deprecated**: it re-reads the index up to `offset` on every page, and a registration inserted mid-walk shifts every later page.
+
+**Example**: See [examples/registry-registrant](./examples/registry-registrant/) for a complete working contract that registers itself during deployment. The example demonstrates integration patterns and includes tests you can copy to your own project.
 
 ### Categories
 
@@ -118,7 +124,8 @@ browsing rather than only a flat list:
 
 | Method | Who can call it |
 | --- | --- |
-| `get_active_contracts_by_category(category, offset, limit)` | anyone — same paging semantics as `get_active_contracts` |
+| `get_contracts_by_category_after(category, cursor, limit)` | anyone — cursor over one category; preferred over the offset form |
+| `get_active_contracts_by_category(category, offset, limit)` | anyone — deprecated offset form, same paging semantics as `get_active_contracts` |
 | `get_categories(contract_id)` | anyone |
 | `set_categories(owner, contract_id, categories)` | the registered owner only |
 | `prune_category(category)` | anyone — removes dead index references, returns the count removed |
@@ -149,8 +156,10 @@ Registrations are also manageable after the fact:
 
 | Method | Who can call it |
 | --- | --- |
-| `get_contracts_by_owner(owner, offset, limit)` | anyone — paginated, includes the owner's deactivated entries |
+| `get_contracts_by_owner_after(owner, cursor, limit)` | anyone — cursor form, includes the owner's deactivated entries |
+| `get_contracts_by_owner(owner, offset, limit)` | anyone — deprecated offset form, includes the owner's deactivated entries |
 | `update_metadata(owner, contract_id, name, description)` | the registered owner only |
+| `set_manager(owner, contract_id, manager)` | the registered owner only — grants the manager a subset of rights |
 | `transfer_ownership(caller, contract_id, new_owner)` | the current owner or the admin |
 | `deactivate(caller, contract_id)` | the current owner or the admin |
 | `deregister(owner, contract_id)` | the registered owner only — entry must be deactivated and unstaked |
@@ -159,6 +168,30 @@ Counters: `get_contract_count` is the live total (deactivated included,
 deregistered excluded), `get_total_registered` is the lifetime total
 (never decremented), and `get_active_contract_count` is the currently listed
 figure. The frontend stats page should read `get_active_contract_count`.
+
+### Delegated management
+
+Teams often operate from a multisig or a deliberately cold deployer key.
+Requiring that key for routine metadata edits means either using it too often
+or not editing at all. An owner can therefore delegate registration management
+to a manager address:
+
+| Method | Who can call it |
+| --- | --- |
+| `set_manager(owner, contract_id, manager)` | the registered owner only — sets or replaces the manager |
+| `clear_manager(owner, contract_id)` | the registered owner only — revokes immediately |
+| `get_manager(contract_id)` | anyone — the current manager, if any |
+
+A manager may:
+
+- `update_metadata(manager, contract_id, name, description)`
+- `set_categories(manager, contract_id, categories)`
+- `deactivate(manager, contract_id)`
+
+A manager may **not** transfer ownership or withdraw stake — the two actions
+that move value. Those remain owner-only (or admin, for `transfer_ownership`
+and `deactivate`). Revocation via `clear_manager` is immediate: the next call
+from the former manager fails with `Unauthorized`.
 
 ### Upgrades
 
@@ -170,11 +203,49 @@ orphan existing registrations at a new address:
 | `get_version()` | anyone — which build is live at this address |
 | `get_admin()` | anyone |
 | `upgrade(admin, new_wasm_hash)` | the admin only |
+| `get_manager(contract_id)` | anyone — the delegated manager for a registration, if set |
 
 `upgrade` swaps the contract's code and keeps its address and storage, so a new
 version must stay compatible with the storage shapes documented on `DataKey` and
 `ContractEntry` in [registry/src/lib.rs](./registry/src/lib.rs). See
 [DEPLOY.md](./DEPLOY.md#upgrading-a-live-registry) for the live runbook.
+
+### Storage keys and their lifetimes
+
+Every key the registry writes is a `DataKey` variant. The table below lists each
+one with its storage type, what it holds, and its expected lifetime, so an
+operator can reason about archival without reading the enum plus every call
+site.
+
+| Key | Storage | Holds | Lifetime / TTL behaviour |
+| --- | --- | --- | --- |
+| `Admin` | instance | The registry admin `Address`. | Lives as long as the contract instance; set once by `initialize`, replaced only by `upgrade`-adjacent admin flows. |
+| `Version` | instance | The live build's version `u32`. | Lives as long as the contract instance; rewritten on each `upgrade`. |
+| `Contract(contract_id)` | persistent | The `ContractEntry` for a registration (owner, name, description, categories, `active`, verified, stake, etc.). | Lives until `deregister` deletes it. `deactivate` keeps the entry, so a deactivated registration still occupies this key. |
+| `AllContracts` | persistent | Index `Vec<Address>` of every registered `contract_id` in registration order. | Lives as long as the registry; entries are appended on register and removed eagerly on `deregister`. Index — must stay consistent with `Contract` entries. |
+| `OwnerContracts(owner)` | persistent | Index `Vec<Address>` of the `contract_id`s owned by `owner`, deactivated included. | Lives as long as the registry; appended on register and removed eagerly on `deregister`. Index — must stay consistent with `Contract` entries. |
+| `CategoryContracts(category)` | persistent | Index `Vec<Address>` of `contract_id`s filed under `category`. | Lives as long as the registry; appended on register and removed eagerly on `deregister`. `deactivate` does not rewrite it. Index — must stay consistent with `Contract` entries. |
+| `ContractCount` | instance | Live total of registrations (deactivated included, deregistered excluded). | Lives as long as the contract instance; incremented on register, decremented on `deregister`. |
+| `TotalRegistered` | instance | Lifetime total of registrations ever made; never decremented. | Lives as long as the contract instance; monotonically increasing. |
+| `ActiveContractCount` | instance | Currently listed (active) registration count. | Lives as long as the contract instance; adjusted on register, `deactivate`, reactivation and `deregister`. |
+| `Stake(contract_id)` | persistent | The staked amount for a registration. | Lives until the entry is deregistered or the stake is fully withdrawn; slash and withdraw mutate it in place. |
+| `StakeLock(contract_id)` | persistent | Ledger at which the slash lock expires for a registration. | Lives until the entry is deregistered; refreshed by each slash. |
+| `Verified(contract_id)` | persistent | Whether the registration is governance-verified. | Lives until the entry is deregistered; set only through a timelocked proposal. |
+| `Slashes(contract_id)` | persistent | Append-only `Vec` of slash records (amount, reason, ledger). | Kept for auditability even after `deregister`; not removed by eager cleanup. |
+| `Attestations(contract_id)` | persistent | Bounded `Vec` of `(attester, label, created_at)` records. | Lives until the entry is deregistered; one per attester, revised in place on re-attest. |
+| `StakingConfig` | instance | The SEP-41 token and treasury `Address` used for staking. | Lives as long as the contract instance; set by `propose_configure_staking` after the timelock. |
+| `AllowlistEnabled` | instance | Whether the allowlist gate is on. | Lives as long as the contract instance; toggled through governance. |
+| `Allowlisted(owner)` | persistent | Whether `owner` is on the allowlist. | Lives as long as the registry; toggled through governance. |
+| `RateLimit` | instance | Per-owner registration limit and window in ledgers. | Lives as long as the contract instance; set through governance; zero limit disables it. |
+| `Proposal(id)` | persistent | A governance proposal (kind, payload, execution ledger, state). | Lives until the proposal is executed or cancelled; read for the timelock check. |
+| `ProposalCount` | instance | Monotonic counter used to allocate proposal IDs. | Lives as long as the contract instance; never decremented. |
+
+Instance keys share the contract instance's TTL and are extended whenever the
+instance is bumped. Persistent keys have their own TTLs and can be archived if
+they are not touched; the index keys (`AllContracts`, `OwnerContracts`,
+`CategoryContracts`) are the ones most likely to strand a reference, which is
+what `prune_category` / `prune_all_contracts` exist to clean up. Slash records
+are deliberately kept past `deregister` for auditability.
 
 ### Error codes
 
@@ -257,6 +328,19 @@ SEP-41 token (native XLM via its Stellar Asset Contract works) and a treasury.
 Routing that through governance rather than `initialize` means the already-live
 registry can adopt staking after an upgrade instead of being redeployed.
 
+**Token compatibility note:** the registry tracks every deposited stake exactly
+and expects the contract's real token balance to match the sum of all individual
+stakes at all times.  **Fee-on-transfer tokens are not supported**: because the
+registry credits the full transfer `amount` while the contract receives
+`amount - fee`, the two figures diverge immediately, and any subsequent slash
+will fail with `ContractBalanceInsufficient` (error 29).  Use only standard
+SEP-41 tokens where `transfer(from, to, amount)` delivers exactly `amount` to
+the recipient.  If this invariant is ever violated for any other reason (rounding
+bug in a custom token, tokens sent directly out of the contract), the same
+`ContractBalanceInsufficient` error is raised before the slash transfer, making
+the discrepancy diagnosable rather than causing an opaque panic deep inside the
+token contract.
+
 ### Third-party attestations
 
 Any address can vouch for a registration with a short, bounded label. This is a
@@ -290,10 +374,10 @@ of the contract rather than of how many parties choose to speak up.
 
 ## Build & Test
 
-Install GNU Make, the Rust stable toolchain, and the Soroban wasm target:
+Install GNU Make, the Rust stable toolchain, and the wasm targets:
 
 ```bash
-rustup target add wasm32v1-none
+rustup target add wasm32v1-none wasm32-unknown-unknown
 rustup component add rustfmt clippy
 ```
 
@@ -305,6 +389,7 @@ make build
 make test
 make fmt
 make clippy
+make wasm-both
 ```
 
 `make test` builds the release wasm for the workspace before running tests. The
@@ -314,8 +399,14 @@ deliberately minimal second version that exists only as that test's upgrade
 target and is never deployed. `make check` runs formatting and clippy checks
 before the build-and-test sequence.
 
-Use `wasm32v1-none`, not `wasm32-unknown-unknown`; on current Rust the latter
+Ship `wasm32v1-none`, not `wasm32-unknown-unknown`; on current Rust the latter
 emits the reference-types proposal, which the Soroban host refuses to load.
+Both targets are built anyway — `make wasm-both`, which `make test` runs — so
+that the host-compatibility test in
+[registry/tests/wasm_targets.rs](./registry/tests/wasm_targets.rs) has the
+artifacts of both to load: the ones we ship have to be accepted, and the other
+ones have to be refused for the documented reason, so that neither claim can go
+stale unnoticed. CI builds both targets before running the suite.
 
 ### Upgrading the Rust Toolchain
 
@@ -323,8 +414,8 @@ The project pins its Rust compiler version using a `rust-toolchain.toml` file to
 
 To upgrade the compiler version:
 1. Update the `channel` value in `rust-toolchain.toml` to the new stable version.
-2. Ensure `targets = ["wasm32v1-none"]` remains present in the file.
-3. Re-run `cargo build --target wasm32v1-none --release` and `cargo test` locally to verify the new compiler version doesn't introduce any new build errors or warnings.
+2. Ensure `targets = ["wasm32v1-none", "wasm32-unknown-unknown"]` remains present in the file: the first is what ships, the second is what CI checks the host's verdict on.
+3. Re-run `make check` locally to verify the new compiler version doesn't introduce any new build errors, warnings or wasm the Soroban host refuses to load.
 4. Commit the updated `rust-toolchain.toml` file and open a PR. CI will automatically honor the newly pinned version instead of defaulting to `stable`.
 
 ### Interface snapshot
@@ -362,6 +453,10 @@ Deployed on **testnet** at:
 CAYUDQPV3RKPM3EXDFGI3457FV677JLUCJ4OLKWGCUBPRIHYKXK3WFAZ
 ```
 
+**Automated deployment**: Use [scripts/deploy.sh](./scripts/deploy.sh) to deploy or upgrade the registry with automatic wasm hash tracking and rollback capability. See [scripts/README.md](./scripts/README.md) for usage.
+
+**TypeScript bindings**: Generate type-safe client bindings with [scripts/generate-bindings.sh](./scripts/generate-bindings.sh) to eliminate hand-written clients and prevent silent breakage when the interface changes.
+
 When a storage type changes, update `registry-v2/` in the same PR so the fixture
 keeps mirroring the real types, then re-run `cargo test`. If you changed
 `ContractEntry` without updating the fixture, CI fails and the message names the
@@ -388,4 +483,3 @@ This repository maintains a minimal dependency surface to minimize attack vector
 ## License
 
 MIT
-
