@@ -163,6 +163,14 @@ fn exported_interface_matches_snapshot() {
         );
     }
 
+    for expected_fn in ["get_proposals"] {
+        assert!(
+            actual.contains(&format!("fn {expected_fn}(")),
+            "proposal listing entry point `{expected_fn}` is missing from the exported interface; \
+             a UI cannot enumerate pending proposals without it"
+        );
+    }
+
     // The unbonding surface is part of the exported interface: an owner must
     // be able to start an unbonding timer and observe when it completes, and
     // `withdraw_stake` must refuse until it elapses. Any change to these

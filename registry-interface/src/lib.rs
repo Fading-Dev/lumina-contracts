@@ -1,115 +1,113 @@
 // Copyright (c) Lumina contributors
 // SPDX-License-Identifier: MIT
-// Copyright (c) Lumina contributors
-// SPDX-License-Identifier: MIT
-#![no_std]
-// Soroban's `#[contracttype]`, `#[contracterror]`, `#[contractimpl]` and
-// `#[contractclient]` macros emit synthetic items — the `SPEC` constants, the
+#no_std
+// Soroban's #[contracttype]`, #[contracterror]`, #[contractimpl]` and
+// #[contractclient]` macros emit synthetic items — the `SPEC` constants, the
 // generated client methods, the error-code helpers — carrying the invocation
 // site's span. `missing_docs` reports those as undocumented and there is no
 // source position to attach a doc comment to, so on current rustc the lint
 // cannot be satisfied by any edit to this crate. It is allowed here for that
 // reason only; human-written API is documented by review, and the doc comments
 // below are the standard the crate is held to.
-#![allow(missing_docs)]
-//! Typed, read-only client for the Lumina Registry — for *contracts*, not
-//! wallets.
-//!
-//! A Soroban contract that wants to ask "is this address listed, and is it
-//! verified?" has two options today, and both are bad: hand-write
-//! `env.invoke_contract(&stack, symbol_short!("is_registered"), ...)` and
-//! decode the `Val` yourself, or use `contractimport!` on the registry's wasm.
-//! The second pulls the whole registry binary into your build, and the first
-//! is unchecked at compile time — a renamed export becomes a runtime failure
-//! in someone else's contract.
-//!
-//! This crate is the third option: a declared trait covering the registry's
-//! read-only surface, and the [`RegistryInterfaceClient`] that
-//! [scoroban_sdk::contractclient] generates from it.
-//!
-//! ```no_run
-//! use lumina_registry_interface::RegistryInterfaceClient;
-//! use soroban_sdk:{Address, Env};
-//!
+#allow_docs)
+/// Typed, read-only client for the Lumina Registry — for *contracts*, not
+/// wallets.
+///
+/// A Soroban contract that wants to ask "is this address listed, and is it
+/// verified?" has two options today, and both are bad: hand-write
+/// `env.invoke_contract(&stack, symbol_short!("is_registered"), ...))` and
+/// decode the `Val` yourself, or use `contractimport!` on the registry's wasm.
+/// The second pulls the whole registry binary into your build, and the first
+/// is unchecked at compile time — a renamed export becomes a runtime failure
+/// in someone else's contract.
+///
+/// This crate is the third option: a declared trait covering the registry's
+/// read-only surface, and the [`RegistryInterfaceClient`] that
+/// [`soroban_sdk::contractclient`] generates from it.
+///
+/// ```no_run
+/// use lumina_registry_interface::RegistryInterfaceClient;
+/// use soroban_sdk::{Address, Env};
+///
 //# fn check(env: &Env, registry: &Address, counterparty: &Address) {
-//! let registry = RegistryInterfaceClient::new(env, registry);
-//! if registry.is_registered(counterparty) && registry.is_verified(counterparty) {
-//!     // ...
-//! }
-//! #}
-//! ```
-//!
+/// let registry = RegistryInterfaceClient::new(env, registry);
+/// if registry.is_registered(counterparty) && registry.is_verified(counterparty) {
+///     // ...
+/// }
+/// #}
+/// ```
+///
 //# Why the types are declared here instead of imported
-//!
-//! [`ContractEntry`], [`Category`], [`Reputation`] and friends are deliberately
-//! *duplicated* from `lumina-registry` rather than re-exported from it. A
-//! dependency edge on the contract crate would drag the registry's entire
-//! `[contractimpl]` — every exported entrypoint and its spec — into every
-//! consumer's wasm, which is both a size problem and a link problem: two
-//! `[contractimpl]` exporting the same symbol do not coexist. `registry-v2`
-//! does the same thing for the same reason, and says so at length.
-//!
-//! The duplication is a real risk — the two declarations could drift — so
-//! it is *tested* rather than trusted. `tests/interface_matches_registry.rs` reads
-//! the registry's compiled spec out of its wasm and asserts that every
-//! function, type and error code declared here matches what the contract
-//! actually exports. Run against a changed registry, it fails with the
-//! signature that moved.
-//!
-//! ## The cost of a read
-//!
-//! A cross-contract read is *not* free, and not free in the way people
-//! expect. It is not a `simulateTransaction` — a contract calling the registry
-//! on-chain spends the transaction's whole resource budget, and the callee's
-//! instructions and ledger reads are charged to *you*.
-//!
-//! Concretely, each read is one nested invocation frame, which costs:
-//!
-//! - a fixed instruction charge for the call itself, before the callee runs
-//!   any code;
-//! - every ledger entry the callee touches, at the callee's TUL — the registry
-//!   stores registrations in `persistent` entries, so a read is a persistent
-//!   entry read, which is the expensive kind;
-//! - a fresh 1 MiB memory allocation for the callee's frame, and the memory
-//!   cost of decoding the arguments you passed in and the result you get back.
-//!
-//! The practical consequence: ** the number of calls is what you pay for.** Two
-//! `is_*` calls cost strictly more than one `get_contract_profile` that returns
-//! both facts, and a loop over counterparties multiplies the fixed per-call
-//! charge every iteration. The `examples/registry-consumer` crate measures this
-//! on the real registry wasm rather than estimating it — see its `cost` module
-//! and the "What a cross-contract read costs" section of the README.
-//!
-//! ## Reentrancy across the token transfer boundary
-//!
-//! The registry moves tokens in three paths: `stake`, `withdraw_stake`, and the
-//! slash path that governance drives. Each of these calls into an external
-//! token contract, which is code the registry does not control. The ordering
-//! therefore matters:
-//!
-//! - **State is written before the external call.** Every path that moves
-//!   tokens follows checks-effects-interactions: the stored balance is
-//!   updated first, then the transfer is issued. A token that reenters
-//!   `withdraw_stake` during its own `transfer` sees a zero balance and
-//!   cannot withdraw twice.
-//!
-//! - **Soroban does not guarantee atomicity of a cross-contract call.**
-//!   The host does not prevent reentrancy, and it does not roll back a
-//!   partially-completed call automatically unless the call returns an
-//!   error or panics. A callee that returns successfully after mutating
-//!   state leaves that mutation in place. The registry therefore cannot
-//!   rely on the host to defend it; it must order its own writes.
-//!
-//! - **Authorization is not a reentrancy defense.** `require_auth` is checked
-//!   once at the entrypoint and does not gate nested calls that the same
-//!   authorized address makes. A token that the registry calls can call back
-//!   into the registry with the registry's own authority still in force.
-//!
-//! The guarantee this crate documents is therefore a *contract-level* one,
-//! not a host-level one: every token-moving entrypoint writes its state
-//! before it calls out. The test suite exercises this with a reentrant token
-//! contract that attempts a double withdrawal and asserts the second
-//! attempt fails.
+///
+/// [`ContractEntry`], [`Category`], [`Reputation`] and friends are deliberately
+/// *duplicated* from `lumina-registry` rather than re-exported from it. A
+/// dependency edge on the contract crate would drag the registry's entire
+/// `#[contractimpl]` — every exported entrypoint and its spec — into every
+/// consumer's wasm, which is both a size problem and a link problem: two
+/// `#[contractimpl]`s exporting the same symbol do not coexist. `registry-v2`
+/// does the same thing for the same reason, and says so at length.
+///
+/// The duplication is a real risk — the two declarations could drift — so it
+/// is *tested* rather than trusted. `tests/interface_matches_registry.rs` reads
+/// the registry's compiled spec out of its wasm and asserts that every
+/// function, type and error code declared here matches what the contract
+/// actually exports. Run against a changed registry, it fails with the
+/// signature that moved.
+///
+/// ## The cost of a read
+///
+/// A cross-contract read is *not* free, and not free in the way people
+/// expect. It is not a `simulateTransaction` — a contract calling the registry
+/// on-chain spends the transaction's whole resource budget, and the callee's
+/// instructions and ledger reads are charged to *you*.
+///
+/// Concretely, each read is one nested invocation frame, which costs:
+///
+/// - a fixed instruction charge for the call itself, before the callee runs
+///   any code;
+/// - every ledger entry the callee touches, at the callee's TVL — the registry
+///   stores registrations in `persistent` entries, so a read is a persistent
+///   entry read, which is the expensive kind;
+/// - a fresh 1 MiB memory allocation for the callee's frame, and the memory
+///   cost of decoding the arguments you passed in and the result you get back.
+///
+/// The practical consequence: **number of calls is what you pay for.** Two
+/// `is_*` calls cost strictly more than one `get_contract_profile` that returns
+/// both facts, and a loop over counterparties multiplies the fixed per-call
+/// charge every iteration. The `examples/registry-consumer` crate measures this
+/// on the real registry wasm rather than estimating it — see its `cost` module
+/// and the "What a cross-contract read costs" section of the README.
+///
+/// ## Reentrancy across the token transfer boundary
+///
+/// The registry moves tokens in three paths: `stake`, `withdraw_stake`, and the
+/// slash path that governance drives. Each of these calls into an external
+/// token contract, which is code the registry does not control. The ordering
+/// therefore matters:
+///
+/// - **State is written before the external call.** Every path that moves
+///   tokens follows checks-effects-interactions: the stored balance is
+///   updated first, then the transfer is issued. A token that reenters
+///   `withdraw_stake` during its own `transfer` sees a zero balance and
+///   cannot withdraw twice.
+///
+/// - **Soroban does not guarantee atomicity of a cross-contract call.**
+///   The host does not prevent reentrancy, and it does not roll back a
+///   partially-completed call automatically unless the call returns an
+///   error or panics. A callee that returns successfully after mutating
+///   state leaves that mutation in place. The registry therefore cannot
+///   rely on the host to defend it; it must order its own writes.
+///
+/// - **Authorization is not a reentrancy defense.** `require_auth` is checked
+///   once at the entrypoint and does not gate nested calls that the same
+///   authorized address makes. A token that the registry calls can call back
+///   into the registry with the registry's own authority still in force.
+///
+/// The guarantee this crate documents is therefore a *contract-level* one,
+/// not a host-level one: every token-moving entrypoint writes its state
+/// before it calls out. The test suite exercises this with a reentrant token
+/// contract that attempts a double withdrawal and asserts the second
+/// attempt fails.
 
 use soroban_sdk::{contractclient, contracterror, contracttype, Address, Env, String, Vec};
 
@@ -144,7 +142,7 @@ use soroban_sdk::{contractclient, contracterror, contracttype, Address, Env, Str
 ///
 /// The write side of the registry moves tokens through an external token
 /// contract in `stake`, `withdraw_stake` and the slash path. Every such
-/// entrypoint writes its stored balance before it issues the transfer
+/// entrypoint writes its stored balance before it issues the transfer,
 /// (checks-effects-interactions), so a token that reenters during its own
 /// `transfer` sees the already-updated balance and cannot double-withdraw.
 /// Soroban itself does not prevent reentrancy and does not roll back a
@@ -183,6 +181,20 @@ pub trait RegistryInterface {
 
     /// Retrieve a governance proposal by ID.
     fn get_proposal(env: Env, proposal_id: u32) -> Result<Proposal, RegistryError>;
+
+    /// One page of governance proposals, newest first.
+    ///
+    /// `offset` indexes the proposal list by insertion order, so the newest
+    /// proposal is at offset 0. When `open_only` is `true`, executed
+    /// proposals are skipped before the offset is applied, so a page can come
+    /// back shorter than `limit` while more open proposals follow. This matches
+    /// the registry listings' paging semantics.
+    fn get_proposals(
+        env: Env,
+        offset: u32,
+        limit: u32,
+        open_only: bool,
+    ) -> Result<Vec<Proposal>, RegistryError>;
 
     /// The timelock duration, in ledgers, that applies to a given action.
     fn get_action_timelock(env: Env, action: ProposalAction) -> u32;
@@ -285,8 +297,7 @@ pub trait RegistryInterface {
     /// never registered and returns `false`. Registration refuses `G…`
     /// addresses, so a `G…` in the registry is not a state this read can
     /// observe — the downstream `isContractAddress` filter that
-    /// `lumina-backend/indexer/src/index.ts` had to add is unnecessary against
-    /// a registry that enforces this.
+    /// `lumina-backend/indexer/src/index.ts` had to add
     fn is_registered(env: Env, contract_id: Address) -> bool;
 
     /// Aggregate counters: lifetime, active and verified totals, plus the
