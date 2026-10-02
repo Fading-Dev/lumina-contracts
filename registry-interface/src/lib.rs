@@ -29,15 +29,15 @@
 /// use lumina_registry_interface::RegistryInterfaceClient;
 /// use soroban_sdk::{Address, Env};
 ///
-//# fn check(env: &Env, registry: &Address, counterparty: &Address) {
+/// fn check(env: &Env, registry: &Address, counterparty: &Address) {
 /// let registry = RegistryInterfaceClient::new(env, registry);
 /// if registry.is_registered(counterparty) && registry.is_verified(counterparty) {
 ///     // ...
 /// }
-/// #}
+/// }
 /// ```
 ///
-//# Why the types are declared here instead of imported
+///# Why the types are declared here instead of imported
 ///
 /// [`ContractEntry`], [`Category`], [`Reputation`] and friends are deliberately
 /// *duplicated* from `lumina-registry` rather than re-exported from it. A
@@ -169,6 +169,12 @@ pub trait RegistryInterface {
     fn get_threshold(env: Env) -> Result<u32, RegistryError>;
 
     /// Retrieve a governance proposal by ID.
+    ///
+    /// The returned [`Proposal`] carries `expires_at`, the ledger sequence at
+    /// which the proposal stops being executable. A UI can compare it against
+    /// the current ledger to show a countdown, and a client can refuse to build
+    /// an execution transaction that the contract would reject anyway. See
+    /// `Proposal::expires_at` for the definition.
     fn get_proposal(env: Env, proposal_id: u32) -> Result<Proposal, RegistryError>;
 
     /// One page of governance proposals, newest first.
@@ -232,23 +238,19 @@ pub trait RegistryInterface {
         limit: u32,
     ) -> Result<Vec<ContractEntry>, RegistryError>;
 
-    /// `(stake_token, treasury)`, or `StakingNotConfiguree` // `StakingNotConfiguree` if governance
-    /// has not opened staking yet.
+    /// `(stake_token, treasury)`, or `StakingNotConfiguree` if governance
+/// has not opened staking yet.
     fn get_staking_config(env: Env) -> Result<(Address, Address), RegistryError>;
 
     /// The per-registration fee. Zero means registration is free.
     fn get_registration_fee(env: Env) -> i128;
 
-/// The stake a registration has to hold to stay listed. Zero means the
-    /// threshold is not open — nothing is refused for being under-staked.
+    /// The stake a registration has to hold to stay listed. Zero means the
+/// threshold is not open — nothing is refused for being under-staked.
     fn get_minimum_stake(env: Env) -> i128;
 
-    /// Total currently staked balance for a registration — the sum of every
-    /// staker's contribution. Zero for a registration that never staked,
-    /// and zero — not an error — for an address that was never registered.
-    ///
-    /// This is the aggregate across all stakers. To read a single staker's
-    /// contribution, use `get_stake_of`.
+    /// Currently staked balance. Zero for a registration that never staked,
+/// and zero — not an error — for an address that was never registered.
     fn get_stake(env: Env, contract_id: Address) -> i128;
 
 /// The ledger at which an in-progress unbonding completes, or zero if no
@@ -668,53 +670,16 @@ pub struct ContractProfile {
 
 /// The reputation signal for a registration.
 ///
-/// Duplicated from `lumina-registry`.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ContractPage {
-    /// The entries in this page.
-    pub entries: Vec<ContractEntry>,
-    /// Whether more entries follow.
-    pub has_more: bool,
-}
-}
-
-/// Aggregate registry counters.
-///
 /// This is the cheapest question to ask the registry: one `has` against one
 /// persistent entry, no decoding. Prefer it whenever the answer is a
 /// yes/no gate and the details are not needed.
 ///
-/// Duplicated from `lumina-registry`.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ContractProfile {
-    /// The registration itself.
-    pub entry: ContractEntry,
-    /// The registration's reputation.
-    pub reputation: Reputation,
-}
-
-/// A page of registration entries.
-///
-/// Duplicated from `lumina-registry`.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ContractPage {
-    /// The entries in this page.
-    pub entries: Vec<ContractEntry>,
-    /// Whether more entries follow.
-    pub has_more: bool,
-}
-
-/// A page of profiles with a more-flag.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ContractProfilePage {
-    /// The profiles in this page.
-    pub profiles: Vec<ContractProfile>,
-    /// Whether more entries follow.
-    pub has_more: bool,
+/// `contract_id` is a contract address (`C…`); a `G…` account address is
+/// never registered and returns `false`. Registration refuses `G`…`
+/// addresses, so a `G…` in the registry is not a state this read can
+/// observe — the downstream `isContractAddress` filter that
+/// `lumina-backend/indexer/src/index.ts` had to add
+    fn is_registered(env: Env, contract_id: Address) -> bool;
 }
 
 /// Number of ledgers a proposal of a given action must wait before execution.
