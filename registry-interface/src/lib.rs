@@ -1,15 +1,15 @@
 // Copyright (c) Lumina contributors
 // SPDX-License-Identifier: MIT
-#no_std
-// Soroban's #[contracttype]`, #[contracterror]`, #[contractimpl]` and
-// #[contractclient]` macros emit synthetic items — the `SPEC` constants, the
+#`!no_std]
+// Soroban's `#[contracttype]`, `#[contracterror]`, `#[contractimpl]` and
+// `#[contractclient]` macros emit synthetic items — the `SPEC` constants, the
 // generated client methods, the error-code helpers — carrying the invocation
 // site's span. `missing_docs` reports those as undocumented and there is no
 // source position to attach a doc comment to, so on current rustc the lint
 // cannot be satisfied by any edit to this crate. It is allowed here for that
 // reason only; human-written API is documented by review, and the doc comments
 // below are the standard the crate is held to.
-#allow_docs)
+#![allow(missing_docs)]
 /// Typed, read-only client for the Lumina Registry — for *contracts*, not
 /// wallets.
 ///
@@ -149,18 +149,7 @@ use soroban_sdk::{contractclient, contracterror, contracttype, Address, Env, Str
 /// successful call's state mutations, so this ordering is the defense.
 /// See the crate-level docs for the full argument. Consumers that only
 /// read the registry are unaffected by any of this.
-///
-/// # Minimum stake
-///
-/// Governance may set a `MinimumStake` that a registration must hold to be
-/// listed. It defaults to zero, so registration behaves exactly as it did
-/// before governance configures it. When it is non-zero, `registered_contract`
-/// requires the stake to be deposited in the same call, and `withdraw_stake`
-/// refuses a withdrawal that would leave the registration below the
-/// minimum. To go below it, the owner deactivates the registration first,
-/// rather than leaving an under-collateralised listing in place. The
-/// minimum is readable through [`RegistryInterface::get_minimum_stake`].
-[contractclient(name = "RegistryInterfaceClient")]
+@contractclient(name = "RegistryInterfaceClient")]
 pub trait RegistryInterface {
     /// Which build of the registry is live at this address.
     fn get_version(env: Env) -> u32;
@@ -209,10 +198,10 @@ pub trait RegistryInterface {
 
     /// One page of active registrations filed under `category`, in
     /// registration order.
-    ///
-    /// `offset` indexes the category's raw index rather than the filtered
-    /// result, so a page can come back shorter than `limit` while more active
-    /// registrations follow. See the trait docs.
+///
+/// `offset` indexes the category's raw index rather than the filtered
+/// result, so a page can come back shorter than `limit` while more active
+/// registrations follow. See the trait docs.
     fn get_active_contracts_by_category(
         env: Env,
         category: Category,
@@ -232,10 +221,10 @@ pub trait RegistryInterface {
     ) -> Vec<ContractEntry>;
 
     /// One page of active registrations filed under **any** of `categories` —
-    /// the union, deduplicated, in registration order.
-    ///
-    /// Errors with `NoCategories` if `categories` is empty. Paging semantics
-    /// as for `get_active_contracts_by_category`.
+/// the union, deduplicated, in registration order.
+///
+/// Errors with `NoCategories` if `categories` is empty. Paging semantics
+/// as for `get_active_contracts_by_category`.
     fn get_contracts_by_categories(
         env: Env,
         categories: Vec<Category>,
@@ -243,8 +232,8 @@ pub trait RegistryInterface {
         limit: u32,
     ) -> Result<Vec<ContractEntry>, RegistryError>;
 
-/// `(stake_token, treasury)`, or `StakingNotConfigured` if governance has
-    /// not opened staking yet.
+    /// `(stake_token, treasury)`, or `StakingNotConfiguree` // `StakingNotConfiguree` if governance
+    /// has not opened staking yet.
     fn get_staking_config(env: Env) -> Result<(Address, Address), RegistryError>;
 
     /// The per-registration fee. Zero means registration is free.
@@ -692,17 +681,9 @@ pub struct ContractPage {
 
 /// Aggregate registry counters.
 ///
-/// Duplicated from `lumina-registry`.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ContractProfilePage {
-    /// The profiles in this page.
-    pub entries: Vec<ContractProfile>,
-    /// Whether more entries follow.
-    pub has_more: bool,
-}
-
-/// A registration joined with its reputation.
+/// This is the cheapest question to ask the registry: one `has` against one
+/// persistent entry, no decoding. Prefer it whenever the answer is a
+/// yes/no gate and the details are not needed.
 ///
 /// Duplicated from `lumina-registry`.
 #[contracttype]
