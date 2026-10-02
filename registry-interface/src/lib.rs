@@ -151,7 +151,18 @@ use soroban_sdk::{contractclient, contracterror, contracttype, Address, Env, Str
 /// successful call's state mutations, so this ordering is the defense.
 /// See the crate-level docs for the full argument. Consumers that only
 /// read the registry are unaffected by any of this.
-#[contractclient(name = "RegistryInterfaceClient")]
+///
+/// # Minimum stake
+///
+/// Governance may set a `MinimumStake` that a registration must hold to be
+/// listed. It defaults to zero, so registration behaves exactly as it did
+/// before governance configures it. When it is non-zero, `registered_contract`
+/// requires the stake to be deposited in the same call, and `withdraw_stake`
+/// refuses a withdrawal that would leave the registration below the
+/// minimum. To go below it, the owner deactivates the registration first,
+/// rather than leaving an under-collateralised listing in place. The
+/// minimum is readable through [`RegistryInterface::get_minimum_stake`].
+[contractclient(name = "RegistryInterfaceClient")]
 pub trait RegistryInterface {
     /// Which build of the registry is live at this address.
     fn get_version(env: Env) -> u32;

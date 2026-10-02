@@ -266,6 +266,12 @@ numbers, so the two constants can be retuned together without silently
 inverting the ordering. A view exposes when unbonding completes so indexers
 and the frontend can display the remaining wait.
 
+Withdrawing below the minimum does not leave an under-collateralised listing
+active. When a non-zero `MinimumStake` is configured, a withdrawal that would
+drop a registration's recorded stake below the minimum clears its `active`
+flag as part of the same invocation, so the listing is deactivated rather than
+silently remaining visible while under-collateralised.
+
 The internal bookkeeping invariant across staking transitions is:
 
 ```text
